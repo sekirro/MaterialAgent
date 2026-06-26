@@ -56,6 +56,7 @@ class MaterialPosteriorBuilder:
         role_weight: float = 0.10,
         whole_weight: float = 0.05,
         memory_weight: float = 0.10,
+        vlm_param_weight: float = 0.05,
     ):
         self.schema_weight = float(schema_weight)
         self.physgm_weight = float(physgm_weight)
@@ -63,6 +64,7 @@ class MaterialPosteriorBuilder:
         self.role_weight = float(role_weight)
         self.whole_weight = float(whole_weight)
         self.memory_weight = float(memory_weight)
+        self.vlm_param_weight = float(vlm_param_weight)
 
     def build(
         self,
@@ -112,7 +114,22 @@ class MaterialPosteriorBuilder:
         for item in dist_outputs:
             for material, prob in item.material_probs.items():
                 material_scores[normalize_material(material)] += self.physgm_weight * float(prob) / max(1, len(dist_outputs))
-            evidence.append({"source": "physgm_distribution", "variant": item.variant, "material": item.material})
+            top_probs = sorted(item.material_probs.items(), key=lambda kv: kv[1], reverse=True)[:5]
+            evidence.append(
+                {
+                    "source": "physgm_part_crop",
+                    "variant": item.variant,
+                    "image_path": item.image_path,
+                    "material": item.material,
+                    "top_material_probs": [{"material": normalize_material(k), "probability": float(v)} for k, v in top_probs],
+                    "E_mean": float(item.E_mean),
+                    "E_sigma_log10": float(item.E_sigma_log10),
+                    "nu_mean": float(item.nu_mean),
+                    "nu_sigma": float(item.nu_sigma),
+                    "predicted_phys_path": item.predicted_phys_path,
+                    "warnings": list(item.warnings),
+                }
+            )
 
         for item in vlm_priors:
             probs = item.get("material_probs") or {}
@@ -127,6 +144,9 @@ class MaterialPosteriorBuilder:
                     "source": "vlm_material_prior",
                     "material": normalize_material(item.get("material")),
                     "confidence": item.get("confidence"),
+                    "material_probs": {normalize_material(k): float(v) for k, v in (item.get("material_probs") or {}).items()},
+                    "E": item.get("E"),
+                    "nu": item.get("nu"),
                     "reason": item.get("reason", ""),
                 }
             )
@@ -156,6 +176,20 @@ class MaterialPosteriorBuilder:
                 nu_values.append(float(item.nu_mean))
                 weights.append(max(0.05, item.material_probs.get(selected_material, 0.1)))
                 sigma_terms.append(float(item.E_sigma_log10))
+
+        for item in vlm_priors:
+            E_value = item.get("E")
+            nu_value = item.get("nu")
+            try:
+                E_float = float(E_value)
+                nu_float = float(nu_value)
+            except Exception:
+                continue
+            if E_float > 0 and math.isfinite(E_float) and math.isfinite(nu_float):
+                logE_values.append(math.log10(E_float))
+                nu_values.append(nu_float)
+                weights.append(max(0.01, self.vlm_param_weight * float(item.get("confidence", 0.5) or 0.5)))
+                sigma_terms.append(0.75)
 
         fallback_E = default_E_for_material(selected_material)
         fallback_nu = default_nu_for_material(selected_material)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import socket
@@ -65,6 +66,8 @@ class VLMPartMaterialPriorExtractor:
         probs = self._normalize_material_probs(data)
         material = normalize_material(data.get("material") or data.get("top_material") or (max(probs, key=probs.get) if probs else None))
         confidence = float(data.get("confidence", probs.get(material, 0.0) if probs else 0.0) or 0.0)
+        E_value = self._positive_float(data.get("E") or data.get("youngs_modulus") or data.get("young_modulus"))
+        nu_value = self._bounded_float(data.get("nu") or data.get("poisson_ratio"), 0.0, 0.499)
         return {
             "part_id": part.part_id,
             "part_name": part.name,
@@ -74,6 +77,8 @@ class VLMPartMaterialPriorExtractor:
             "material": material,
             "material_probs": probs or {material: max(0.01, min(1.0, confidence))},
             "confidence": max(0.0, min(1.0, confidence)),
+            "E": E_value,
+            "nu": nu_value,
             "reason": str(data.get("reason", "")),
             "raw": data,
         }
@@ -89,12 +94,16 @@ class VLMPartMaterialPriorExtractor:
             f"Part physical role: {part.physical_role or part.physics_group}\n"
             f"Existing weak expected materials: {expected}\n"
             f"Allowed material classes: {materials}\n"
+            "Choose material ONLY from the allowed 14 PhysGM classes. Do not invent rare material names; map them to the nearest allowed class.\n"
             "Prefer real-world physical material behavior over color. For cake/food, use Foam or Plasticine for soft edible bodies/cream; "
             "use Ceramic/Glass/Plastic for plates or rigid support objects; use Paper for labels/signs when appropriate.\n"
+            "Also provide a rough Young's modulus E in Pascal and Poisson ratio nu if visually inferable; otherwise use null.\n"
             "Required schema: {\n"
             "  \"material\": \"Foam\",\n"
             "  \"confidence\": 0.75,\n"
             "  \"material_probs\": {\"Foam\": 0.55, \"Plasticine\": 0.35, \"Plastic\": 0.10},\n"
+            "  \"E\": 100000.0,\n"
+            "  \"nu\": 0.35,\n"
             "  \"reason\": \"short visual/physical reason\"\n"
             "}"
         )
@@ -148,6 +157,25 @@ class VLMPartMaterialPriorExtractor:
             return self._extract_json(data["choices"][0]["message"]["content"])
         except (urllib.error.URLError, TimeoutError, socket.timeout, KeyError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"VLM material prior call failed: {exc}") from exc
+
+
+    def _positive_float(self, value: Any) -> float | None:
+        try:
+            out = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(out) or out <= 0:
+            return None
+        return out
+
+    def _bounded_float(self, value: Any, lo: float, hi: float) -> float | None:
+        try:
+            out = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(out):
+            return None
+        return max(float(lo), min(float(hi), out))
 
     def _normalize_material_probs(self, data: dict[str, Any]) -> dict[str, float]:
         raw = data.get("material_probs") or data.get("materials") or {}

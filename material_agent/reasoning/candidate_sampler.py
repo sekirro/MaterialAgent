@@ -44,9 +44,9 @@ def _part_material(
         E,
         nu,
         density,
-        E_range=tuple(solver_ranges.get("local_E_range", (1.0e3, 2.0e6))),
+        E_range=tuple(solver_ranges["local_E_range"]) if "local_E_range" in solver_ranges else None,
         nu_range=tuple(solver_ranges.get("local_nu_range", (0.05, 0.45))),
-        density_range=tuple(solver_ranges.get("local_density_range", (50.0, 3000.0))),
+        density_range=tuple(solver_ranges.get("local_density_range", (300.0, 3000.0))),
     )
     return CandidatePartMaterial(
         part_id=part.part_id,
@@ -76,9 +76,15 @@ class CandidateSetSampler:
             active_parts = [p for p in scene.parts if p.part_id in posteriors]
         candidates: list[CandidateSet] = []
         candidates.append(self._build("posterior_map", "MAP material and median E/nu", active_parts, posteriors, 0.50, 0.50))
-        food_stable = self._food_stable_candidate(scene, active_parts, posteriors)
-        if food_stable:
-            candidates.append(food_stable)
+        hard_bonded = self._hard_support_bonded_response(scene, active_parts, posteriors)
+        if hard_bonded:
+            candidates.append(hard_bonded)
+        solver_compatible = self._solver_compatible_response(scene, active_parts, posteriors)
+        if solver_compatible:
+            candidates.append(solver_compatible)
+        rigid_support = self._rigid_support_response(active_parts, posteriors)
+        if rigid_support:
+            candidates.append(rigid_support)
         candidates.append(self._build("soft_response", "Lower E for deformable response", active_parts, posteriors, 0.25, 0.75))
         candidates.append(self._build("stiff_response", "Higher E for rigid/support response", active_parts, posteriors, 0.75, 0.50))
         sweep = self._uncertain_sweep(active_parts, posteriors)
@@ -133,108 +139,172 @@ class CandidateSetSampler:
             mats.append(_part_material(part, posteriors[part.part_id], material, 0.50, 0.50, "alternative_material", self.solver_ranges))
         return self._candidate("alternative_material", f"Try second material {alt_material} for {target.name}", mats)
 
-    def _food_stable_candidate(
+    def _hard_support_bonded_response(
         self,
         scene: SceneEvidence,
         parts: list[PartEvidence],
         posteriors: dict[int, PartPosterior],
     ) -> CandidateSet | None:
-        text = " ".join([scene.object_name] + [p.name for p in parts]).lower()
-        if not any(token in text for token in ("cake", "icing", "frosting", "cream", "strawberr", "dessert")):
+        if not parts:
             return None
-        mats = []
-        for part in parts:
-            name = part.name.lower()
-            if any(token in name for token in ("plate", "dish", "tray")):
-                mats.append(
-                    self._manual_part(
-                        part,
-                        posteriors[part.part_id],
-                        visual_material="Ceramic",
-                        solver_material="metal",
-                        E=1.0e8,
-                        nu=0.25,
-                        density=2800.0,
-                        source="food_stable_particle",
-                    )
-                )
-            elif any(token in name for token in ("straw", "berry", "topping", "fruit")):
-                mats.append(
-                    self._manual_part(
-                        part,
-                        posteriors[part.part_id],
-                        visual_material="Rubber",
-                        solver_material="jelly",
-                        E=9.0e4,
-                        nu=0.42,
-                        density=650.0,
-                        source="food_stable_particle",
-                    )
-                )
-            elif any(token in name for token in ("frost", "cream", "icing", "swirl", "drip")):
-                mats.append(
-                    self._manual_part(
-                        part,
-                        posteriors[part.part_id],
-                        visual_material="Plasticine",
-                        solver_material="plasticine",
-                        E=1.2e4,
-                        nu=0.45,
-                        density=180.0,
-                        source="food_stable_particle",
-                    )
-                )
-            elif "cake" in name or "body" in name or "base" in name:
-                mats.append(
-                    self._manual_part(
-                        part,
-                        posteriors[part.part_id],
-                        visual_material="Plasticine",
-                        solver_material="plasticine",
-                        E=3.0e4,
-                        nu=0.43,
-                        density=300.0,
-                        source="food_stable_particle",
-                    )
+        prototype = [
+            _part_material(part, posteriors[part.part_id], None, 0.50, 0.50, "hard_support_bonded_response", self.solver_ranges)
+            for part in parts
+        ]
+        has_support = any(self._is_rigid_or_support_part(part, mat) for part, mat in zip(parts, prototype))
+        has_deformable = any(not self._is_rigid_or_support_part(part, mat) and self._is_cohesive_or_food_part(part, mat) for part, mat in zip(parts, prototype))
+        if not (has_support and has_deformable):
+            return None
+
+        whole = scene.whole_physics or {}
+        baseline_E = float(whole.get("E") or self.solver_ranges.get("hard_bonded_body_E", 5.0e5))
+        baseline_nu = float(whole.get("nu") or self.solver_ranges.get("hard_bonded_body_nu", 0.476))
+        baseline_density = float(whole.get("density") or self.solver_ranges.get("hard_bonded_body_density", 5000.0))
+        support_floor = float(self.solver_ranges.get("hard_bonded_support_E", self.solver_ranges.get("rigid_support_E_floor", 1.0e7)))
+        support_cap = float(self.solver_ranges.get("hard_bonded_support_E_cap", support_floor))
+        support_density = float(self.solver_ranges.get("hard_bonded_support_density", 2500.0))
+        support_nu = float(self.solver_ranges.get("hard_bonded_support_nu", 0.35))
+
+        mats: list[CandidatePartMaterial] = []
+        for part, mat in zip(parts, prototype):
+            if self._is_rigid_or_support_part(part, mat):
+                old_solver = mat.solver_material
+                mat.solver_material = "metal"
+                mat.simulation_E = min(max(float(mat.simulation_E), support_floor), max(support_floor, support_cap))
+                mat.raw_E = min(max(float(mat.raw_E), support_floor), max(support_floor, support_cap))
+                mat.simulation_nu = support_nu
+                mat.raw_nu = min(float(mat.raw_nu), support_nu)
+                mat.simulation_density = support_density
+                mat.raw_density = max(float(mat.raw_density), support_density)
+                mat.warnings.append(
+                    "Hard support bonded response keeps this support/rigid part stiff and enables bonded interface constraints "
+                    f"({old_solver} -> metal, E in [{support_floor:g}, {max(support_floor, support_cap):g}])."
                 )
             else:
-                mats.append(_part_material(part, posteriors[part.part_id], None, 0.25, 0.75, "food_stable_particle", self.solver_ranges))
-        return self._candidate("food_stable_particle", "Food-object stable per-particle material proxy", mats)
+                old_solver = mat.solver_material
+                role_scale = self._composite_role_scale(part, mat)
+                mat.solver_material = "plasticine"
+                mat.simulation_E = max(float(mat.simulation_E), baseline_E * role_scale)
+                mat.simulation_nu = min(max(baseline_nu, 0.20), 0.485)
+                mat.simulation_density = baseline_density
+                mat.warnings.append(
+                    "Hard support bonded response uses a cohesive plasticine-family solver for the object body/contact layer "
+                    f"while preserving part-specific stiffness evidence ({old_solver} -> plasticine)."
+                )
+            mats.append(mat)
+        candidate = self._candidate(
+            "hard_support_bonded_response",
+            "Keep support parts hard while bonding initial support-body contact layers to prevent contact artifacts",
+            mats,
+        )
+        candidate.warnings.append("Generated because the scene contains support-like parts in contact with cohesive/deformable parts.")
+        return candidate
 
-    def _manual_part(
+    def _solver_compatible_response(
         self,
-        part: PartEvidence,
-        posterior: PartPosterior,
-        visual_material: str,
-        solver_material: str,
-        E: float,
-        nu: float,
-        density: float,
-        source: str,
-    ) -> CandidatePartMaterial:
-        sim_E, sim_nu, sim_density, sim_warnings = clamp_solver_values(
-            E,
-            nu,
-            density,
-            E_range=tuple(self.solver_ranges.get("local_E_range", (1.0e3, 2.0e6))),
-            nu_range=tuple(self.solver_ranges.get("local_nu_range", (0.05, 0.45))),
-            density_range=tuple(self.solver_ranges.get("local_density_range", (50.0, 3000.0))),
+        scene: SceneEvidence,
+        parts: list[PartEvidence],
+        posteriors: dict[int, PartPosterior],
+    ) -> CandidateSet | None:
+        if not parts:
+            return None
+        prototype = [
+            _part_material(part, posteriors[part.part_id], None, 0.50, 0.50, "solver_compatible_response", self.solver_ranges)
+            for part in parts
+        ]
+        has_support = any(self._is_rigid_or_support_part(part, mat) for part, mat in zip(parts, prototype))
+        has_deformable = any(not self._is_rigid_or_support_part(part, mat) and self._is_cohesive_or_food_part(part, mat) for part, mat in zip(parts, prototype))
+        if not (has_support and has_deformable):
+            return None
+
+        whole = scene.whole_physics or {}
+        baseline_material = normalize_material(whole.get("material") or self.solver_ranges.get("composite_visual_material", "Plasticine"))
+        baseline_solver = solver_material_for_visual(baseline_material)
+        if baseline_solver not in {"plasticine", "jelly", "foam"}:
+            baseline_solver = "plasticine"
+        baseline_E = float(whole.get("E") or self.solver_ranges.get("composite_E", 5.0e5))
+        baseline_nu = float(whole.get("nu") or self.solver_ranges.get("composite_nu", 0.476))
+        baseline_density = float(whole.get("density") or self.solver_ranges.get("composite_density", 5000.0))
+        min_scale = float(self.solver_ranges.get("composite_E_min_scale", 0.85))
+        max_scale = float(self.solver_ranges.get("composite_E_max_scale", 1.7))
+
+        mats: list[CandidatePartMaterial] = []
+        for part, mat in zip(parts, prototype):
+            old_solver = mat.solver_material
+            role_scale = self._composite_role_scale(part, mat)
+            target_E = baseline_E * role_scale
+            mat.solver_material = baseline_solver
+            mat.simulation_E = min(max(target_E, baseline_E * min_scale), baseline_E * max_scale)
+            mat.simulation_nu = min(max(baseline_nu, 0.20), 0.485)
+            mat.simulation_density = baseline_density
+            mat.warnings.append(
+                "Composite solver regularization keeps visual material evidence but uses a compatible solver family "
+                f"({old_solver} -> {mat.solver_material}) and disables rigid projection for bonded support contacts."
+            )
+            mats.append(mat)
+        candidate = self._candidate(
+            "solver_compatible_response",
+            "Regularize bonded composite parts into a compatible solver family to avoid support/contact artifacts",
+            mats,
         )
-        return CandidatePartMaterial(
-            part_id=part.part_id,
-            part_name=part.name,
-            visual_material=visual_material,
-            solver_material=solver_material,
-            raw_E=float(E),
-            raw_nu=float(nu),
-            raw_density=float(density),
-            simulation_E=sim_E,
-            simulation_nu=sim_nu,
-            simulation_density=sim_density,
-            confidence=posterior.confidence,
-            source=source,
-            warnings=["Food stable proxy parameters for per-particle MPM."] + sim_warnings,
+        candidate.global_material = baseline_solver
+        candidate.global_E = baseline_E
+        candidate.global_nu = min(max(baseline_nu, 0.20), 0.485)
+        candidate.global_density = baseline_density
+        candidate.warnings.append("Generated because the scene contains both support-like and cohesive/deformable parts.")
+        return candidate
+
+    def _is_cohesive_or_food_part(self, part: PartEvidence, mat: CandidatePartMaterial) -> bool:
+        text = f"{part.name} {part.physics_group} {part.physical_role} {mat.visual_material}".lower()
+        contact_body_tokens = (
+            "body", "base", "core", "main", "bulk", "filling", "coating", "layer",
+            "cream", "frosting", "icing", "fruit", "organic", "soft", "deformable",
+            "foam", "sponge", "rubber", "gel", "cloth", "fabric", "leather", "pad",
         )
+        if any(token in text for token in contact_body_tokens):
+            return True
+        return mat.solver_material in {"foam", "plasticine", "jelly"} and mat.visual_material not in {"Ceramic", "Metal", "Glass", "Stone"}
+
+    def _composite_role_scale(self, part: PartEvidence, mat: CandidatePartMaterial) -> float:
+        text = f"{part.name} {part.physics_group} {part.physical_role} {mat.visual_material}".lower()
+        if self._is_rigid_or_support_part(part, mat):
+            return float(self.solver_ranges.get("composite_support_E_scale", 1.6))
+        if any(token in text for token in ("candle", "stem", "stick", "handle")):
+            return float(self.solver_ranges.get("composite_detail_E_scale", 1.45))
+        if any(token in text for token in ("fruit", "strawberry", "berry", "decoration")):
+            return float(self.solver_ranges.get("composite_decoration_E_scale", 1.25))
+        if any(token in text for token in ("cream", "frosting", "icing")):
+            return float(self.solver_ranges.get("composite_coating_E_scale", 1.05))
+        return 1.0
+
+    def _rigid_support_response(self, parts: list[PartEvidence], posteriors: dict[int, PartPosterior]) -> CandidateSet | None:
+        if not parts:
+            return None
+        mats = []
+        touched = False
+        for part in parts:
+            mat = _part_material(part, posteriors[part.part_id], None, 0.25, 0.75, "rigid_support_response", self.solver_ranges)
+            if self._is_rigid_or_support_part(part, mat):
+                touched = True
+                floor = float(self.solver_ranges.get("rigid_support_E_floor", 1.0e7))
+                cap = max(floor, float(self.solver_ranges.get("rigid_support_E_cap", floor)))
+                old_E = float(mat.simulation_E)
+                mat.raw_E = max(float(mat.raw_E), floor)
+                mat.simulation_E = min(max(old_E, floor), cap)
+                if mat.simulation_E != old_E:
+                    mat.warnings.append(f"Rigid/support solver calibration changed simulation E from {old_E:g} to {mat.simulation_E:g}.")
+            mats.append(mat)
+        if not touched:
+            return None
+        return self._candidate("rigid_support_response", "Soft deformables with rigid/support stiffness prior", mats)
+
+    def _is_rigid_or_support_part(self, part: PartEvidence, mat: CandidatePartMaterial) -> bool:
+        text = f"{part.name} {part.physics_group} {part.physical_role}".lower()
+        if any(token in text for token in ("plate", "dish", "tray", "stand", "support", "holder", "base support")):
+            return True
+        if mat.visual_material in {"Ceramic", "Metal", "Glass", "Stone"}:
+            return True
+        return mat.solver_material == "metal"
 
     def _candidate(self, candidate_id: str, description: str, parts: list[CandidatePartMaterial]) -> CandidateSet:
         if parts:

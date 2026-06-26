@@ -81,7 +81,7 @@ MATERIAL_TO_NU_RANGE = {
 VISUAL_TO_SOLVER_MATERIAL = {
     "Wood": "metal",
     "Metal": "metal",
-    "Plastic": "plasticine",
+    "Plastic": "metal",
     "Glass": "metal",
     "Fabric": "foam",
     "Leather": "foam",
@@ -167,7 +167,6 @@ def clamp(value: float, lo: float, hi: float) -> float:
 def clamp_physical_values(material: str | None, E: float, nu: float) -> tuple[float, float, list[str]]:
     material = normalize_material(material)
     warnings: list[str] = []
-    e_lo, e_hi = MATERIAL_TO_E_RANGE[material]
     nu_lo, nu_hi = MATERIAL_TO_NU_RANGE[material]
     if not math.isfinite(float(E)) or float(E) <= 0:
         E = default_E_for_material(material)
@@ -175,10 +174,8 @@ def clamp_physical_values(material: str | None, E: float, nu: float) -> tuple[fl
     if not math.isfinite(float(nu)):
         nu = default_nu_for_material(material)
         warnings.append(f"Invalid nu replaced by {nu:g} for {material}.")
-    new_E = clamp(float(E), e_lo, e_hi)
+    new_E = float(E)
     new_nu = clamp(float(nu), nu_lo, min(nu_hi, 0.499))
-    if new_E != float(E):
-        warnings.append(f"E clamped from {float(E):g} to {new_E:g} for {material}.")
     if new_nu != float(nu):
         warnings.append(f"nu clamped from {float(nu):g} to {new_nu:g} for {material}.")
     return new_E, new_nu, warnings
@@ -188,12 +185,12 @@ def clamp_solver_values(
     E: float,
     nu: float,
     density: float,
-    E_range=(1.0e3, 2.0e6),
+    E_range=None,
     nu_range=(0.05, 0.45),
-    density_range=(50.0, 3000.0),
+    density_range=(300.0, 3000.0),
 ) -> tuple[float, float, float, list[str]]:
     warnings: list[str] = []
-    new_E = clamp(float(E), E_range[0], E_range[1])
+    new_E = float(E) if E_range is None else clamp(float(E), E_range[0], E_range[1])
     new_nu = clamp(float(nu), nu_range[0], min(nu_range[1], 0.49))
     new_density = clamp(float(density), density_range[0], density_range[1])
     if new_E != float(E):

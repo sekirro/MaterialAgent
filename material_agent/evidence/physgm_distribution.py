@@ -41,6 +41,7 @@ class PhysGMDistributionExtractor:
         device: str = "cuda",
         amp_dtype: str = "bf16",
         mock: bool = False,
+        crop_variants: list[str] | None = None,
     ):
         self.physgm_root = Path(physgm_root).expanduser().resolve()
         self.partphys_root = Path(partphys_root).expanduser().resolve()
@@ -49,6 +50,7 @@ class PhysGMDistributionExtractor:
         self.device = device
         self.amp_dtype = amp_dtype
         self.mock = bool(mock)
+        self.crop_variants = tuple(crop_variants or [])
         self._loaded = False
         self.model = None
         self.base_config = None
@@ -107,6 +109,7 @@ class PhysGMDistributionExtractor:
             part_output = ensure_dir(output / f"part_{part.part_id:03d}_{part.name}")
             existing_crops = self._existing_crops(part)
             crops = existing_crops or build_part_crops(scene, part, part_output / "crops")
+            crops = self._filter_crops(crops)
             outputs: list[DistributionOutput] = []
             for variant, crop_path in crops.items():
                 run_dir = ensure_dir(part_output / "physgm_outputs" / f"{variant}")
@@ -118,6 +121,15 @@ class PhysGMDistributionExtractor:
             write_json(part_output / "distribution_outputs.json", [x.to_dict() for x in outputs])
         write_json(output / "part_distribution_outputs.json", {str(k): [x.to_dict() for x in v] for k, v in all_outputs.items()})
         return all_outputs
+
+
+    def _filter_crops(self, crops: dict[str, str]) -> dict[str, str]:
+        if not self.crop_variants:
+            return crops
+        selected = {name: crops[name] for name in self.crop_variants if name in crops}
+        if selected:
+            return selected
+        return crops
 
     def _existing_crops(self, part: PartEvidence) -> dict[str, str]:
         if not part.part_dir:

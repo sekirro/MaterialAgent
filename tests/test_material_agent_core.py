@@ -5,9 +5,14 @@ from pathlib import Path
 
 from PIL import Image
 
+from material_agent.agent import MaterialAgentController
+from material_agent.evaluation.critic import MaterialCritic
 from material_agent.loaders.partphys_outputs import PartPhysSceneLoader
 from material_agent.reasoning.candidate_sampler import CandidateSetSampler
 from material_agent.reasoning.posterior import MaterialPosteriorBuilder
+from material_agent.simulation.config_compiler import SimulationConfigCompiler
+from material_agent.simulation.runner import SimulationRunner
+from material_agent.schemas import CandidatePartMaterial, CandidateSet, SceneEvidence
 
 
 def _write_json(path: Path, data):
@@ -70,4 +75,65 @@ def test_loader_and_candidate_sampler(tmp_path):
     assert candidates
     head = candidates[0].parts[0]
     assert head.visual_material == "Metal"
+
+
+
+
+def test_controller_runs_repair_loop_with_mock_sim(tmp_path):
+    scene = PartPhysSceneLoader(_make_scene(tmp_path)).load()
+    posteriors = MaterialPosteriorBuilder().build(scene, {}, {})
+    template = tmp_path / "template.json"
+    _write_json(template, {"material": "plasticine", "E": 1e5, "nu": 0.3, "density": 1000.0})
+    output = tmp_path / "agent_output"
+    controller = MaterialAgentController(
+        sampler=CandidateSetSampler(budget=2),
+        compiler=SimulationConfigCompiler(template, backend="aabb"),
+        runner=SimulationRunner(physgm_root=tmp_path, partphys_root=tmp_path, mock=True),
+        critic=MaterialCritic(acceptance_score=0.99),
+        max_rounds=2,
+        repair_budget=2,
+        simulate=True,
+    )
+    result = controller.run(scene, posteriors, output)
+    assert (output / "agent_trace.json").exists()
+    assert result.selected.candidate_id
+    assert any(candidate.candidate_id.startswith("repair_") for candidate in result.candidates)
+
+
+def test_compiler_reduces_dt_for_high_stiffness_part(tmp_path):
+    template = tmp_path / "template.json"
+    _write_json(template, {"material": "plasticine", "E": 1e5, "nu": 0.3, "density": 1000.0, "frame_dt": 0.04, "substep_dt": 0.0002})
+    candidate = CandidateSet(
+        candidate_id="high_stiffness",
+        description="test high stiffness support",
+        parts=[
+            CandidatePartMaterial(
+                part_id=4,
+                part_name="plate",
+                visual_material="Ceramic",
+                solver_material="metal",
+                raw_E=1.0e7,
+                raw_nu=0.35,
+                raw_density=2500.0,
+                simulation_E=1.0e7,
+                simulation_nu=0.35,
+                simulation_density=2500.0,
+                confidence=0.9,
+                source="test",
+            )
+        ],
+        global_material="plasticine",
+        global_E=1e5,
+        global_nu=0.3,
+        global_density=1000.0,
+    )
+    compiled = SimulationConfigCompiler(template, backend="part_id").compile_candidate(SceneEvidence(scene_dir=str(tmp_path)), candidate, tmp_path / "out")
+    config = json.loads(Path(compiled["config_path"]).read_text())
+    materials = json.loads(Path(compiled["part_materials_json"]).read_text())
+
+    assert config["substep_dt"] < 0.0002
+    assert config["substep_dt"] <= 0.0001
+    assert config["material_agent_metadata"]["solver_stability"]["adjusted"] is True
+    assert materials["parts"]["4"]["E"] == 1.0e7
+    assert materials["parts"]["4"]["material"] == "metal"
 
