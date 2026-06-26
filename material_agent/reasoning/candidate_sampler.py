@@ -76,6 +76,9 @@ class CandidateSetSampler:
             active_parts = [p for p in scene.parts if p.part_id in posteriors]
         candidates: list[CandidateSet] = []
         candidates.append(self._build("posterior_map", "MAP material and median E/nu", active_parts, posteriors, 0.50, 0.50))
+        food_stable = self._food_stable_candidate(scene, active_parts, posteriors)
+        if food_stable:
+            candidates.append(food_stable)
         candidates.append(self._build("soft_response", "Lower E for deformable response", active_parts, posteriors, 0.25, 0.75))
         candidates.append(self._build("stiff_response", "Higher E for rigid/support response", active_parts, posteriors, 0.75, 0.50))
         sweep = self._uncertain_sweep(active_parts, posteriors)
@@ -130,6 +133,109 @@ class CandidateSetSampler:
             mats.append(_part_material(part, posteriors[part.part_id], material, 0.50, 0.50, "alternative_material", self.solver_ranges))
         return self._candidate("alternative_material", f"Try second material {alt_material} for {target.name}", mats)
 
+    def _food_stable_candidate(
+        self,
+        scene: SceneEvidence,
+        parts: list[PartEvidence],
+        posteriors: dict[int, PartPosterior],
+    ) -> CandidateSet | None:
+        text = " ".join([scene.object_name] + [p.name for p in parts]).lower()
+        if not any(token in text for token in ("cake", "icing", "frosting", "cream", "strawberr", "dessert")):
+            return None
+        mats = []
+        for part in parts:
+            name = part.name.lower()
+            if any(token in name for token in ("plate", "dish", "tray")):
+                mats.append(
+                    self._manual_part(
+                        part,
+                        posteriors[part.part_id],
+                        visual_material="Ceramic",
+                        solver_material="metal",
+                        E=1.0e8,
+                        nu=0.25,
+                        density=2800.0,
+                        source="food_stable_particle",
+                    )
+                )
+            elif any(token in name for token in ("straw", "berry", "topping", "fruit")):
+                mats.append(
+                    self._manual_part(
+                        part,
+                        posteriors[part.part_id],
+                        visual_material="Rubber",
+                        solver_material="jelly",
+                        E=9.0e4,
+                        nu=0.42,
+                        density=650.0,
+                        source="food_stable_particle",
+                    )
+                )
+            elif any(token in name for token in ("frost", "cream", "icing", "swirl", "drip")):
+                mats.append(
+                    self._manual_part(
+                        part,
+                        posteriors[part.part_id],
+                        visual_material="Plasticine",
+                        solver_material="plasticine",
+                        E=1.2e4,
+                        nu=0.45,
+                        density=180.0,
+                        source="food_stable_particle",
+                    )
+                )
+            elif "cake" in name or "body" in name or "base" in name:
+                mats.append(
+                    self._manual_part(
+                        part,
+                        posteriors[part.part_id],
+                        visual_material="Plasticine",
+                        solver_material="plasticine",
+                        E=3.0e4,
+                        nu=0.43,
+                        density=300.0,
+                        source="food_stable_particle",
+                    )
+                )
+            else:
+                mats.append(_part_material(part, posteriors[part.part_id], None, 0.25, 0.75, "food_stable_particle", self.solver_ranges))
+        return self._candidate("food_stable_particle", "Food-object stable per-particle material proxy", mats)
+
+    def _manual_part(
+        self,
+        part: PartEvidence,
+        posterior: PartPosterior,
+        visual_material: str,
+        solver_material: str,
+        E: float,
+        nu: float,
+        density: float,
+        source: str,
+    ) -> CandidatePartMaterial:
+        sim_E, sim_nu, sim_density, sim_warnings = clamp_solver_values(
+            E,
+            nu,
+            density,
+            E_range=tuple(self.solver_ranges.get("local_E_range", (1.0e3, 2.0e6))),
+            nu_range=tuple(self.solver_ranges.get("local_nu_range", (0.05, 0.45))),
+            density_range=tuple(self.solver_ranges.get("local_density_range", (50.0, 3000.0))),
+        )
+        return CandidatePartMaterial(
+            part_id=part.part_id,
+            part_name=part.name,
+            visual_material=visual_material,
+            solver_material=solver_material,
+            raw_E=float(E),
+            raw_nu=float(nu),
+            raw_density=float(density),
+            simulation_E=sim_E,
+            simulation_nu=sim_nu,
+            simulation_density=sim_density,
+            confidence=posterior.confidence,
+            source=source,
+            warnings=["Food stable proxy parameters for per-particle MPM."] + sim_warnings,
+        )
+
     def _candidate(self, candidate_id: str, description: str, parts: list[CandidatePartMaterial]) -> CandidateSet:
         if parts:
             largest = max(parts, key=lambda p: p.confidence)
@@ -153,4 +259,3 @@ class CandidateSetSampler:
             global_density=float(global_density),
             score_prior=float(sum(p.confidence for p in parts) / max(1, len(parts))),
         )
-
