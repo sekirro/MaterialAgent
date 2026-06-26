@@ -1,0 +1,6 @@
+posterior:
+  vlm_material_weight: 0.80
+solver_clamp:
+  local_E_range: [1000.0, 500000.0]
+  local_nu_range: [0.05, 0.42]
+  local_density_range: [50.0, 3000.0]

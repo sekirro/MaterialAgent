@@ -1,0 +1,62 @@
+# MaterialAgent default configuration draft.
+
+input:
+  partphys_scene: null
+  physgm_root: ../PhysGM
+  template_config: ../PhysGM/configs/physical/down_template.json
+
+output:
+  subdir: material_agent
+  save_keyframes: true
+  save_reports: true
+
+evidence:
+  use_partphys_crop_outputs: true
+  use_physgm_distribution: true
+  use_vlm_material_prior: false
+  use_skill_memory: true
+  skill_memory_path: material_skills.yaml
+
+posterior:
+  schema_expected_material_weight: 0.30
+  physgm_crop_weight: 0.35
+  vlm_prior_weight: 0.20
+  skill_memory_weight: 0.15
+  global_physgm_weight_for_multi_part: 0.10
+
+sampling:
+  candidate_budget: 5
+  include_baseline_partphys: true
+  include_posterior_map: true
+  include_soft_response: true
+  include_stiff_response: true
+  include_uncertain_part_sweep: true
+  random_seed: 1234
+
+simulation:
+  run: false
+  mock_sim: false
+  render_img: true
+  compile_video: true
+  white_bg: true
+  timeout_sec: 1800
+  max_parallel: 1
+
+solver_clamp:
+  local_E_range: [1.0e3, 2.0e6]
+  local_nu_range: [0.05, 0.45]
+  local_density_range: [50.0, 3000.0]
+
+evaluation:
+  selection: auto
+  use_vlm_judge: false
+  hard_fail_blank_video: true
+  hard_fail_explosion: true
+  prefer_rigid_parts_less_deformed: true
+  prefer_temporal_smoothness: true
+
+memory:
+  update_after_selection: true
+  min_score_to_store: 0.55
+  max_entries_per_key: 20
+
