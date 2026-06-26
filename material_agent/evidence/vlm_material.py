@@ -5,11 +5,10 @@ import json
 import math
 import os
 import re
-import socket
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
+
+from openai import OpenAI, OpenAIError
 
 from ..constants import PHYSGM_MATERIALS, normalize_material
 from ..io_utils import ensure_dir, write_json
@@ -130,32 +129,27 @@ class VLMPartMaterialPriorExtractor:
         key = os.environ.get(self.api_key_env)
         if not key:
             raise RuntimeError(f"API key env var {self.api_key_env} is not set.")
-        payload = json.dumps(
-            {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": self._image_url(image_path)}},
-                        ],
-                    }
-                ],
-                "temperature": 0,
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.api_base}/chat/completions",
-            data=payload,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            method="POST",
-        )
+        client = OpenAI(api_key=key, base_url=self.api_base, timeout=self.timeout)
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": self._image_url(image_path)}},
+                    ],
+                }
+            ],
+            "temperature": 0,
+        }
+        if self.model.lower().startswith("qwen") or "aliyuncs.com" in self.api_base:
+            kwargs["extra_body"] = {"enable_thinking": False}
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            return self._extract_json(data["choices"][0]["message"]["content"])
-        except (urllib.error.URLError, TimeoutError, socket.timeout, KeyError, json.JSONDecodeError) as exc:
+            completion = client.chat.completions.create(**kwargs)
+            text = completion.choices[0].message.content or ""
+            return self._extract_json(text)
+        except (OpenAIError, AttributeError, IndexError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"VLM material prior call failed: {exc}") from exc
 
 
