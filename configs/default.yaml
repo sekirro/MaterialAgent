@@ -26,7 +26,7 @@ posterior:
   global_physgm_weight_for_multi_part: 0.10
 
 sampling:
-  candidate_budget: 5
+  candidate_budget: 6
   include_baseline_partphys: true
   include_posterior_map: true
   include_soft_response: true

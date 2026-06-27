@@ -26,6 +26,15 @@ def _is_composite_regularized_part(mat: CandidatePartMaterial) -> bool:
     return any("composite solver regularization" in warning.lower() for warning in mat.warnings)
 
 
+def _is_rigid_project_eligible(mat: CandidatePartMaterial) -> bool:
+    text = f"{mat.part_name} {mat.visual_material} {mat.solver_material}".lower()
+    if any(token in text for token in ("plate", "dish", "tray", "bowl", "stand", "support", "holder", "shell", "frame", "blade", "head", "tip")):
+        return True
+    if mat.visual_material in {"Ceramic", "Metal", "Glass", "Stone", "Wood"}:
+        return True
+    return mat.solver_material == "metal"
+
+
 class SimulationConfigCompiler:
     def __init__(self, template_config: str | Path, backend: str = "auto", solver_stability: dict | None = None):
         self.template_config = Path(template_config).expanduser()
@@ -104,6 +113,10 @@ class SimulationConfigCompiler:
         }
         parts = {}
         for mat in candidate.parts:
+            rigid_project = bool(mat.rigid_project)
+            if _is_composite_regularized_part(mat):
+                rigid_project = False
+            interface_bond = bool(mat.interface_bond and rigid_project)
             parts[str(mat.part_id)] = {
                 "name": mat.part_name,
                 "material": mat.solver_material,
@@ -114,6 +127,14 @@ class SimulationConfigCompiler:
                 "raw_E": float(mat.raw_E),
                 "raw_nu": float(mat.raw_nu),
                 "raw_density": float(mat.raw_density),
+                "rigid_eligible": _is_rigid_project_eligible(mat),
+                "rigid_project": rigid_project,
+                "rigid_project_strength": min(max(float(mat.rigid_project_strength), 0.0), 1.0) if rigid_project else 0.0,
+                "interface_bond": interface_bond,
+                "interface_bond_radius": float(mat.interface_bond_radius),
+                "interface_bond_strength": min(max(float(mat.interface_bond_strength), 0.0), 1.0) if interface_bond else 0.0,
+                "interface_bond_velocity_blend": min(max(float(mat.interface_bond_velocity_blend), 0.0), 1.0) if interface_bond else 0.0,
+                "interface_bond_max_particles": int(mat.interface_bond_max_particles),
             }
         write_json(path, {"fallback": fallback, "parts": parts})
 
@@ -227,3 +248,4 @@ class SimulationConfigCompiler:
         denom = max((1.0 + poisson) * (1.0 - 2.0 * poisson), 1.0e-6)
         lam = young * poisson / denom
         return (lam + 2.0 * mu) / rho
+

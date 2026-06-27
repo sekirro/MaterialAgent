@@ -75,17 +75,20 @@ class CandidateSetSampler:
         if not active_parts:
             active_parts = [p for p in scene.parts if p.part_id in posteriors]
         candidates: list[CandidateSet] = []
-        candidates.append(self._build("posterior_map", "MAP material and median E/nu", active_parts, posteriors, 0.50, 0.50))
-        hard_bonded = self._hard_support_bonded_response(scene, active_parts, posteriors)
-        if hard_bonded:
-            candidates.append(hard_bonded)
+        candidates.append(self._build("posterior_map", "MAP material and median E/nu without projection constraints", active_parts, posteriors, 0.50, 0.50))
+        support_stiff_mpm = self._support_stiff_mpm_response(active_parts, posteriors)
+        if support_stiff_mpm:
+            candidates.append(support_stiff_mpm)
         solver_compatible = self._solver_compatible_response(scene, active_parts, posteriors)
         if solver_compatible:
             candidates.append(solver_compatible)
         rigid_support = self._rigid_support_response(active_parts, posteriors)
         if rigid_support:
             candidates.append(rigid_support)
-        candidates.append(self._build("soft_response", "Lower E for deformable response", active_parts, posteriors, 0.25, 0.75))
+        hard_bonded = self._hard_support_bonded_response(scene, active_parts, posteriors)
+        if hard_bonded:
+            candidates.append(hard_bonded)
+        candidates.append(self._build("soft_response", "Lower E for deformable response without projection constraints", active_parts, posteriors, 0.25, 0.75))
         candidates.append(self._build("stiff_response", "Higher E for rigid/support response", active_parts, posteriors, 0.75, 0.50))
         sweep = self._uncertain_sweep(active_parts, posteriors)
         if sweep:
@@ -139,6 +142,54 @@ class CandidateSetSampler:
             mats.append(_part_material(part, posteriors[part.part_id], material, 0.50, 0.50, "alternative_material", self.solver_ranges))
         return self._candidate("alternative_material", f"Try second material {alt_material} for {target.name}", mats)
 
+    @staticmethod
+    def _enable_rigid_projection(mat: CandidatePartMaterial, strength: float = 1.0) -> None:
+        mat.rigid_project = True
+        mat.rigid_project_strength = min(max(float(strength), 0.0), 1.0)
+
+    @staticmethod
+    def _enable_interface_bond(
+        mat: CandidatePartMaterial,
+        radius: float = 0.045,
+        strength: float = 0.95,
+        velocity_blend: float = 0.95,
+        max_particles: int = 26000,
+    ) -> None:
+        mat.interface_bond = True
+        mat.interface_bond_radius = float(radius)
+        mat.interface_bond_strength = min(max(float(strength), 0.0), 1.0)
+        mat.interface_bond_velocity_blend = min(max(float(velocity_blend), 0.0), 1.0)
+        mat.interface_bond_max_particles = int(max_particles)
+
+    def _support_stiff_mpm_response(self, parts: list[PartEvidence], posteriors: dict[int, PartPosterior]) -> CandidateSet | None:
+        if not parts:
+            return None
+        mats = []
+        touched = False
+        for part in parts:
+            mat = _part_material(part, posteriors[part.part_id], None, 0.50, 0.50, "support_stiff_mpm_response", self.solver_ranges)
+            if self._is_rigid_or_support_part(part, mat):
+                touched = True
+                floor = float(self.solver_ranges.get("rigid_support_E_floor", 1.0e7))
+                cap = max(floor, float(self.solver_ranges.get("rigid_support_E_cap", floor)))
+                old_solver = mat.solver_material
+                old_E = float(mat.simulation_E)
+                mat.solver_material = "metal"
+                mat.raw_E = max(float(mat.raw_E), floor)
+                mat.simulation_E = min(max(old_E, floor), cap)
+                mat.raw_nu = min(float(mat.raw_nu), 0.35)
+                mat.simulation_nu = min(float(mat.simulation_nu), 0.35)
+                mat.raw_density = max(float(mat.raw_density), 1000.0)
+                mat.simulation_density = max(float(mat.simulation_density), 1000.0)
+                mat.warnings.append(
+                    "Support stiff MPM candidate raises support stiffness but deliberately leaves rigid_project disabled "
+                    f"({old_solver} -> metal, E >= {floor:g})."
+                )
+            mats.append(mat)
+        if not touched:
+            return None
+        return self._candidate("support_stiff_mpm_response", "Hard support material with normal MPM dynamics and no projection", mats)
+
     def _hard_support_bonded_response(
         self,
         scene: SceneEvidence,
@@ -176,8 +227,11 @@ class CandidateSetSampler:
                 mat.raw_nu = min(float(mat.raw_nu), support_nu)
                 mat.simulation_density = support_density
                 mat.raw_density = max(float(mat.raw_density), support_density)
+                self._enable_rigid_projection(mat, strength=0.85)
+                self._enable_interface_bond(mat, radius=0.045, strength=0.95, velocity_blend=0.95, max_particles=26000)
                 mat.warnings.append(
-                    "Hard support bonded response keeps this support/rigid part stiff and enables bonded interface constraints "
+                    "Hard support bonded response keeps this support/rigid part stiff and explicitly enables "
+                    "rigid_project plus bonded interface constraints "
                     f"({old_solver} -> metal, E in [{support_floor:g}, {max(support_floor, support_cap):g}])."
                 )
             else:
@@ -291,8 +345,10 @@ class CandidateSetSampler:
                 old_E = float(mat.simulation_E)
                 mat.raw_E = max(float(mat.raw_E), floor)
                 mat.simulation_E = min(max(old_E, floor), cap)
+                self._enable_rigid_projection(mat, strength=1.0)
                 if mat.simulation_E != old_E:
                     mat.warnings.append(f"Rigid/support solver calibration changed simulation E from {old_E:g} to {mat.simulation_E:g}.")
+                mat.warnings.append("Rigid support candidate explicitly enables rigid_project as a simulation action.")
             mats.append(mat)
         if not touched:
             return None

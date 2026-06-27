@@ -211,6 +211,8 @@ class MaterialAgentController:
         for repair in repairs:
             if repair == "raise_support_stiffness":
                 out.append(self._with_support_stiffness(base, round_index))
+            elif repair == "enable_rigid_support":
+                out.append(self._with_rigid_support_projection(base, round_index))
             elif repair == "elastic_cohesive_response":
                 out.append(self._with_elastic_cohesion(base, round_index))
             elif repair == "increase_deformable_cohesion":
@@ -246,6 +248,17 @@ class MaterialAgentController:
         for part in candidate.parts:
             if is_support_like_material(part):
                 self._apply_support_prior(part)
+        self._refresh_global(candidate)
+        return candidate
+
+    def _with_rigid_support_projection(self, base: CandidateSet, round_index: int) -> CandidateSet:
+        candidate = self._clone(base, f"repair_r{round_index}_rigid_support", "Repair: enable rigid projection for support/rigid-like parts")
+        for part in candidate.parts:
+            if is_support_like_material(part):
+                self._apply_support_prior(part)
+                part.rigid_project = True
+                part.rigid_project_strength = 1.0
+                part.warnings.append("Repair explicitly enables rigid_project after support stiffness alone was insufficient.")
         self._refresh_global(candidate)
         return candidate
 

@@ -145,6 +145,7 @@ class MaterialCritic:
 
         if "support_too_soft" in issues:
             repairs.append("raise_support_stiffness")
+            repairs.append("enable_rigid_support")
         if any(x in issues for x in ("excessive_spread", "flattened_response", "cohesive_parts_use_plastic_solver")):
             repairs.append("elastic_cohesive_response")
             repairs.append("increase_deformable_cohesion")

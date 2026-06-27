@@ -110,6 +110,13 @@ class CandidatePartMaterial:
     simulation_density: float
     confidence: float
     source: str
+    rigid_project: bool = False
+    rigid_project_strength: float = 1.0
+    interface_bond: bool = False
+    interface_bond_radius: float = 0.035
+    interface_bond_strength: float = 0.75
+    interface_bond_velocity_blend: float = 0.75
+    interface_bond_max_particles: int = 25000
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

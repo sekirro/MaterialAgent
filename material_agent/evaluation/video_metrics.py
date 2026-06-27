@@ -56,12 +56,16 @@ class VideoEvaluator:
         stiffness_order = self._stiffness_role_score(candidate)
         density_score = self._density_score(candidate)
         solver_response = self._solver_response_score(candidate)
+        projection_penalty = self._projection_constraint_penalty(candidate)
         score += 0.27 * avg_conf + 0.10 * diversity + 0.25 * stiffness_order + 0.15 * candidate.score_prior + 0.08 * density_score + 0.15 * solver_response
+        score -= projection_penalty
         reasons.append(f"avg material confidence {avg_conf:.3f}")
         reasons.append(f"material diversity {diversity:.3f}")
         reasons.append(f"role stiffness score {stiffness_order:.3f}")
         reasons.append(f"density stability score {density_score:.3f}")
         reasons.append(f"solver response score {solver_response:.3f}")
+        if projection_penalty > 0.0:
+            reasons.append(f"projection constraint penalty -{projection_penalty:.3f}")
         return {
             "candidate_id": candidate.candidate_id,
             "ok": True,
@@ -83,6 +87,11 @@ class VideoEvaluator:
             else:
                 score += 0.7
         return score / max(1, len(candidate.parts))
+
+    def _projection_constraint_penalty(self, candidate: CandidateSet) -> float:
+        rigid_count = sum(1 for part in candidate.parts if bool(getattr(part, "rigid_project", False)))
+        bond_count = sum(1 for part in candidate.parts if bool(getattr(part, "interface_bond", False)))
+        return min(0.12, 0.025 * rigid_count + 0.035 * bond_count)
 
     def _density_score(self, candidate: CandidateSet) -> float:
         if not candidate.parts:

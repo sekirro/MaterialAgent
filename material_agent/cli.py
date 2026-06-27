@@ -223,7 +223,7 @@ def run(args: argparse.Namespace) -> int:
     write_json(output_dir / "part_posteriors.json", {str(k): v.to_dict() for k, v in posteriors.items()})
     state["steps"].append("posterior")
 
-    budget = args.candidate_budget or config.get("sampling", {}).get("candidate_budget", 5)
+    budget = args.candidate_budget or config.get("sampling", {}).get("candidate_budget", 6)
     sampler = CandidateSetSampler(budget=budget, solver_ranges=_solver_ranges(config))
     compiler = SimulationConfigCompiler(args.template_config, backend=args.backend, solver_stability=config.get("solver_stability", {}))
     simulate = bool(args.simulate or args.mock_sim)
