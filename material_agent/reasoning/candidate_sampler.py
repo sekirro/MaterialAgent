@@ -136,10 +136,18 @@ class CandidateSetSampler:
         for part in parts:
             posterior = posteriors[part.part_id]
             sorted_probs = sorted(posterior.material_probs.items(), key=lambda item: item[1], reverse=True)
-            if len(sorted_probs) >= 2 and sorted_probs[1][1] > alt_prob:
+            if len(sorted_probs) < 2:
+                continue
+            candidate_material = sorted_probs[1][0]
+            candidate_prob = float(sorted_probs[1][1])
+            posterior_E = 10 ** float(posterior.logE_mean)
+            candidate_E = default_E_for_material(candidate_material)
+            if candidate_E > max(posterior_E * 10.0, 1.0e7):
+                continue
+            if candidate_prob > alt_prob:
                 target = part
-                alt_material = sorted_probs[1][0]
-                alt_prob = sorted_probs[1][1]
+                alt_material = candidate_material
+                alt_prob = candidate_prob
         if target is None or alt_material is None or alt_prob < 0.12:
             return None
         mats = []

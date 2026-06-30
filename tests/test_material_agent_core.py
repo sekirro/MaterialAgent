@@ -12,7 +12,7 @@ from material_agent.reasoning.candidate_sampler import CandidateSetSampler
 from material_agent.reasoning.posterior import MaterialPosteriorBuilder
 from material_agent.simulation.config_compiler import SimulationConfigCompiler
 from material_agent.simulation.runner import SimulationRunner
-from material_agent.schemas import CandidatePartMaterial, CandidateSet, SceneEvidence
+from material_agent.schemas import CandidatePartMaterial, CandidateSet, PartEvidence, PartPosterior, SceneEvidence
 
 
 def _write_json(path: Path, data):
@@ -76,6 +76,30 @@ def test_loader_and_candidate_sampler(tmp_path):
     head = candidates[0].parts[0]
     assert head.visual_material == "Metal"
 
+
+
+def test_alternative_candidate_does_not_jump_to_unsupported_high_stiffness():
+    scene = SceneEvidence(
+        scene_dir="/tmp/scene",
+        parts=[PartEvidence(part_id=0, name="body", physics_group="body", confidence=0.8, gaussian_count=100)],
+    )
+    posterior = PartPosterior(
+        part_id=0,
+        part_name="body",
+        material_probs={"Plasticine": 0.57, "Plastic": 0.41},
+        selected_material="Plasticine",
+        material_confidence=0.57,
+        logE_mean=5.7,
+        logE_std=0.2,
+        nu_mean=0.47,
+        nu_std=0.04,
+        density=2000.0,
+        confidence=0.25,
+    )
+
+    candidates = CandidateSetSampler(budget=8).sample(scene, {0: posterior})
+
+    assert all(candidate.candidate_id != "alternative_material" for candidate in candidates)
 
 
 
