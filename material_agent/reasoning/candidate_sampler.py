@@ -71,9 +71,7 @@ class CandidateSetSampler:
         self.solver_ranges = solver_ranges or {}
 
     def sample(self, scene: SceneEvidence, posteriors: dict[int, PartPosterior]) -> list[CandidateSet]:
-        active_parts = [p for p in scene.parts if p.part_id in posteriors and not is_residual_part(p)]
-        if not active_parts:
-            active_parts = [p for p in scene.parts if p.part_id in posteriors]
+        active_parts = self._active_parts(scene, posteriors)
         candidates: list[CandidateSet] = []
         candidates.append(self._build("posterior_map", "MAP material and median E/nu without projection constraints", active_parts, posteriors, 0.50, 0.50))
         support_stiff_mpm = self._support_stiff_mpm_response(active_parts, posteriors)
@@ -97,6 +95,14 @@ class CandidateSetSampler:
         if alternative:
             candidates.append(alternative)
         return candidates[: self.budget]
+
+    def _active_parts(self, scene: SceneEvidence, posteriors: dict[int, PartPosterior]) -> list[PartEvidence]:
+        non_residual = [p for p in scene.parts if p.part_id in posteriors and not is_residual_part(p)]
+        residual = [p for p in scene.parts if p.part_id in posteriors and is_residual_part(p) and int(p.gaussian_count or 0) > 0]
+        active = non_residual + residual
+        if active:
+            return active
+        return [p for p in scene.parts if p.part_id in posteriors]
 
     def _build(
         self,

@@ -51,8 +51,10 @@ class PartPhysSceneLoader:
         assignment_summary = read_json(self.scene_dir / "assignment" / "assignment_summary.json", {}) or {}
         whole_info = summary.get("whole_physgm") or {}
         local_whole_dir = self.scene_dir / "physgm_whole"
-        whole_dir = _existing_path(local_whole_dir) or _existing_path(whole_info.get("scene_dir"), self.scene_dir)
         point_cloud = _existing_path(local_whole_dir / "point_clouds.ply") or _existing_path(whole_info.get("point_cloud_path"), self.scene_dir)
+        whole_dir = _existing_path(whole_info.get("scene_dir"), self.scene_dir) or _existing_path(local_whole_dir)
+        if point_cloud and point_cloud.parent.exists():
+            whole_dir = point_cloud.parent
         predicted_phys = _existing_path(local_whole_dir / "predicted_phys.json") or _existing_path(
             whole_info.get("predicted_phys_path"),
             self.scene_dir,
