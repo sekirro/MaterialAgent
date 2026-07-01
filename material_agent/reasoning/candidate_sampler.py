@@ -66,14 +66,19 @@ def _part_material(
 
 
 class CandidateSetSampler:
-    def __init__(self, budget: int = 5, solver_ranges: dict | None = None):
+    def __init__(self, budget: int = 5, solver_ranges: dict | None = None, interaction_role: str = "neutral", interaction_intent: str = ""):
         self.budget = max(1, int(budget))
         self.solver_ranges = solver_ranges or {}
+        self.interaction_role = str(interaction_role or "neutral").lower()
+        self.interaction_intent = str(interaction_intent or "").lower()
 
     def sample(self, scene: SceneEvidence, posteriors: dict[int, PartPosterior]) -> list[CandidateSet]:
         active_parts = self._active_parts(scene, posteriors)
         candidates: list[CandidateSet] = []
         candidates.append(self._build("posterior_map", "MAP material and median E/nu without projection constraints", active_parts, posteriors, 0.50, 0.50))
+        target_impact = self._target_impact_soft_response(active_parts, posteriors)
+        if target_impact:
+            candidates.append(target_impact)
         support_stiff_mpm = self._support_stiff_mpm_response(active_parts, posteriors)
         if support_stiff_mpm:
             candidates.append(support_stiff_mpm)
@@ -95,6 +100,49 @@ class CandidateSetSampler:
         if alternative:
             candidates.append(alternative)
         return candidates[: self.budget]
+
+    def _target_impact_soft_response(self, parts: list[PartEvidence], posteriors: dict[int, PartPosterior]) -> CandidateSet | None:
+        if self.interaction_role != "target" or "impact" not in self.interaction_intent:
+            return None
+        if not parts:
+            return None
+        mats: list[CandidatePartMaterial] = []
+        touched = False
+        for part in parts:
+            mat = _part_material(part, posteriors[part.part_id], None, 0.25, 0.75, "target_impact_soft_response", self.solver_ranges)
+            if is_residual_part(part):
+                mat.warnings.append("Target impact softening skipped for residual/unknown part to avoid softening hidden support/background remnants.")
+            elif self._is_cohesive_or_food_part(part, mat) and not self._is_rigid_or_support_part(part, mat):
+                touched = True
+                old_E = float(mat.simulation_E)
+                old_density = float(mat.simulation_density)
+                target_E = float(self.solver_ranges.get("target_impact_soft_E", 7.5e4))
+                min_E = float(self.solver_ranges.get("target_impact_soft_E_min", 2.0e4))
+                max_E = float(self.solver_ranges.get("target_impact_soft_E_max", 2.5e5))
+                target_density = float(self.solver_ranges.get("target_impact_soft_density", 450.0))
+                mat.simulation_E = min(max(min(old_E, target_E), min_E), max_E)
+                mat.raw_E = min(float(mat.raw_E), mat.simulation_E)
+                mat.simulation_density = min(max(target_density, 300.0), max(300.0, float(mat.simulation_density)))
+                mat.raw_density = min(float(mat.raw_density), mat.simulation_density)
+                if mat.solver_material not in {"foam", "plasticine", "jelly"}:
+                    mat.solver_material = "foam"
+                mat.simulation_nu = min(max(float(mat.simulation_nu), 0.20), 0.40)
+                mat.raw_nu = min(float(mat.raw_nu), mat.simulation_nu)
+                mat.warnings.append(
+                    "Target impact response lowers cohesive/deformable target stiffness and density "
+                    f"for visible collision response (E {old_E:g}->{mat.simulation_E:g}, density {old_density:g}->{mat.simulation_density:g})."
+                )
+            mats.append(mat)
+        if not touched:
+            return None
+        candidate = self._candidate(
+            "target_impact_soft_response",
+            "Interaction-aware response for objects hit by another object: keep rigid supports but soften cohesive target parts",
+            mats,
+        )
+        candidate.score_prior = max(float(candidate.score_prior), 0.82)
+        candidate.warnings.append("Generated because interaction_role=target and interaction_intent includes impact.")
+        return candidate
 
     def _active_parts(self, scene: SceneEvidence, posteriors: dict[int, PartPosterior]) -> list[PartEvidence]:
         non_residual = [p for p in scene.parts if p.part_id in posteriors and not is_residual_part(p)]

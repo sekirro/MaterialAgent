@@ -102,6 +102,70 @@ def test_alternative_candidate_does_not_jump_to_unsupported_high_stiffness():
     assert all(candidate.candidate_id != "alternative_material" for candidate in candidates)
 
 
+def test_target_impact_sampler_generates_soft_target_response():
+    scene = SceneEvidence(
+        scene_dir="/tmp/scene",
+        object_name="cake",
+        parts=[
+            PartEvidence(part_id=0, name="icing", physics_group="icing", confidence=0.8, gaussian_count=100),
+            PartEvidence(part_id=1, name="cake_body", physics_group="body", confidence=0.8, gaussian_count=100),
+            PartEvidence(part_id=2, name="unknown_body", physics_group="global_body", confidence=0.4, gaussian_count=100),
+        ],
+    )
+    posteriors = {
+        0: PartPosterior(
+            part_id=0,
+            part_name="icing",
+            material_probs={"Plasticine": 0.7, "Foam": 0.3},
+            selected_material="Plasticine",
+            material_confidence=0.7,
+            logE_mean=5.7,
+            logE_std=0.2,
+            nu_mean=0.47,
+            nu_std=0.04,
+            density=2000.0,
+            confidence=0.7,
+        ),
+        1: PartPosterior(
+            part_id=1,
+            part_name="cake_body",
+            material_probs={"Foam": 0.7, "Plasticine": 0.3},
+            selected_material="Foam",
+            material_confidence=0.7,
+            logE_mean=5.2,
+            logE_std=0.2,
+            nu_mean=0.30,
+            nu_std=0.04,
+            density=300.0,
+            confidence=0.7,
+        ),
+        2: PartPosterior(
+            part_id=2,
+            part_name="unknown_body",
+            material_probs={"Plasticine": 0.7, "Plastic": 0.3},
+            selected_material="Plasticine",
+            material_confidence=0.7,
+            logE_mean=5.7,
+            logE_std=0.2,
+            nu_mean=0.47,
+            nu_std=0.04,
+            density=2000.0,
+            confidence=0.4,
+        ),
+    }
+
+    candidates = CandidateSetSampler(budget=4, interaction_role="target", interaction_intent="impact").sample(scene, posteriors)
+    target = next(candidate for candidate in candidates if candidate.candidate_id == "target_impact_soft_response")
+
+    assert target.score_prior >= 0.82
+    semantic = [part for part in target.parts if part.part_name != "unknown_body"]
+    residual = next(part for part in target.parts if part.part_name == "unknown_body")
+    assert all(part.simulation_E <= 2.5e5 for part in semantic)
+    assert residual.simulation_E > 2.5e5
+    assert any("Target impact response" in warning for part in semantic for warning in part.warnings)
+    assert any("softening skipped" in warning for warning in residual.warnings)
+
+
 
 def test_controller_runs_repair_loop_with_mock_sim(tmp_path):
     scene = PartPhysSceneLoader(_make_scene(tmp_path)).load()
@@ -160,4 +224,3 @@ def test_compiler_reduces_dt_for_high_stiffness_part(tmp_path):
     assert config["material_agent_metadata"]["solver_stability"]["adjusted"] is True
     assert materials["parts"]["4"]["E"] == 1.0e7
     assert materials["parts"]["4"]["material"] == "metal"
-

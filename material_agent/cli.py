@@ -45,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--template-config", default="/root/PhysGM/configs/physical/down_template.json")
     parser.add_argument("--config", default=None, help="Optional MaterialAgent YAML config.")
     parser.add_argument("--candidate-budget", type=int, default=None)
+    parser.add_argument("--interaction-role", choices=["neutral", "active", "target"], default="neutral")
+    parser.add_argument("--interaction-intent", default="", help="Optional interaction context, e.g. impact, support, drop.")
     parser.add_argument("--agent-rounds", type=int, default=None, help="Maximum plan-act-observe-repair rounds when simulation is enabled.")
     parser.add_argument("--repair-budget", type=int, default=None, help="Maximum repair candidates generated per agent round.")
     parser.add_argument("--agent-acceptance-score", type=float, default=None, help="Minimum score accepted before repair stops.")
@@ -224,7 +226,12 @@ def run(args: argparse.Namespace) -> int:
     state["steps"].append("posterior")
 
     budget = args.candidate_budget or config.get("sampling", {}).get("candidate_budget", 6)
-    sampler = CandidateSetSampler(budget=budget, solver_ranges=_solver_ranges(config))
+    sampler = CandidateSetSampler(
+        budget=budget,
+        solver_ranges=_solver_ranges(config),
+        interaction_role=args.interaction_role,
+        interaction_intent=args.interaction_intent,
+    )
     compiler = SimulationConfigCompiler(args.template_config, backend=args.backend, solver_stability=config.get("solver_stability", {}))
     simulate = bool(args.simulate or args.mock_sim)
     runner = None
